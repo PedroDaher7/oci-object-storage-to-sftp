@@ -1,0 +1,52 @@
+declare
+    l_export apex_data_export.t_export;
+    l_region_id number;
+    l_request_url varchar2(32767);
+    l_content_length number;
+    l_content_first_line_end_position number;
+    l_content_clob clob;
+    l_response clob;
+    upload_failed_exception exception;
+    l_request_object blob;
+    l_request_filename varchar2(500);
+begin
+    SELECT region_id into l_region_id
+    FROM apex_application_page_regions
+    WHERE application_id = :APP_ID
+    and page_id = :APP_PAGE_ID
+    and static_id = 'export_workbook';
+
+    l_export := apex_region.export_data (
+        p_format => apex_data_export.c_format_csv,
+        p_page_id => :APP_PAGE_ID,
+        p_region_id => l_region_id,
+        -- Get the content as a CLOB
+        p_as_clob => TRUE,
+        p_data_only => FALSE
+    );
+
+    l_request_url := 'https://objectstorage.us-ashburn-1.oraclecloud.com/n/namespace/b/’bucket name’/o/' || apex_util.url_encode(name of file’);
+
+    dbms_lob.createtemporary(l_content_clob, true, dbms_lob.session);
+
+    -- Search for the first new-line character
+    l_content_first_line_end_position := dbms_lob.instr( l_export.content_clob, CHR(10) );
+    if l_content_first_line_end_position = 0 then
+        l_content_clob := l_export.content_clob;
+    else
+        DBMS_LOB.COPY (
+            dest_lob => l_content_clob,
+            src_lob => l_export.content_clob,
+            amount => dbms_lob.getlength( l_export.content_clob ) - ( l_content_first_line_end_position + 1 ),
+            src_offset => l_content_first_line_end_position + 1
+        );
+    end if;
+
+    l_response := apex_web_service.make_rest_request(
+        p_url => l_request_url,
+        p_http_method => 'PUT',
+        -- By this point the content should not have the headers (unless there was no data in it)
+        p_body => l_content_clob,
+        p_credential_static_id => 'OCI_API_ACCESS'
+    );
+end;
